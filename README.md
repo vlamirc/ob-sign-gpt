@@ -10,39 +10,44 @@ Upload privado de PDF (até 10 MB), 1–10 signatários, painel por operador, co
 
 ## Executar localmente
 
-Requisitos: PHP 8.5 com PDO PostgreSQL, SQLite (testes), mbstring, XML, DOM, fileinfo, ZIP e GD; Composer 2; Node 22+; Docker Compose para PostgreSQL/Mailpit. Use as versões travadas nos lockfiles.
+Requisitos: Docker com Compose v2 ou superior (no Windows, Docker Desktop com integração WSL2). PHP 8.5 e Composer 2 são necessários apenas para o primeiro `composer install`; PHP, Node 24, PostgreSQL 17 e Mailpit rodam nos containers do Sail. Use as versões travadas nos lockfiles.
+
+Em uma instalação nova:
 
 ```bash
 cp .env.example .env
 composer install
-php artisan key:generate
-docker compose up -d
-php artisan migrate
-npm ci
-npm run build
-php artisan assina:operator operador@example.com --name="Operador"
-php artisan serve
+./vendor/bin/sail up -d --build
+./vendor/bin/sail artisan key:generate
+./vendor/bin/sail artisan migrate
+./vendor/bin/sail npm ci
+./vendor/bin/sail npm run build
+./vendor/bin/sail artisan assina:operator operador@example.com --name="Operador"
 ```
 
 O comando de operador solicita senha sem exibi-la. Use um endereço sob seu controle; o provisionamento considera esse e-mail conferido pelo administrador. Não existe senha padrão. Em outro terminal:
 
 ```bash
-php artisan queue:work --tries=3 --timeout=60
+./vendor/bin/sail artisan queue:work --tries=3 --timeout=60
 ```
 
-Acesse o endereço exibido por `artisan serve`. O Mailpit fica em `http://localhost:8025`; captura mensagens apenas localmente, sem enviá-las a pessoas reais. Ajuste `APP_URL` ao endereço utilizado antes de gerar convites. Abra o convite no Mailpit, solicite o código, consulte a segunda mensagem, abra o PDF e confirme o aceite. Todos os signatários precisam aceitar para gerar o pacote. Para retomar falhas de fila: `php artisan queue:failed` e, após corrigir a causa, `php artisan queue:retry <id>`.
+A aplicação fica em `http://localhost:8000` e o Mailpit em `http://localhost:8025`; ele captura mensagens apenas localmente, sem enviá-las a pessoas reais. Para atualizar os assets automaticamente durante o desenvolvimento, execute `./vendor/bin/sail npm run dev` em outro terminal. O Vite usa a porta 5173 e HMR com host `localhost`, inclusive no WSL2.
 
-Não use `composer setup` em uma instalação existente: ele gera outra chave de aplicação. Guarde `APP_KEY` com os backups; sessões e convites em fila usam criptografia. Nunca versionar `.env`, banco ou documentos. O volume do Compose contém o banco; não executar `docker compose down -v` se quiser preservá-lo.
+Se já existe um `.env`, preserve a chave e as credenciais e ajuste `APP_PORT=8000`, `DB_HOST=postgres` e `MAIL_HOST=mailpit`. Mantenha `DB_PORT=5432` e `MAIL_PORT=1025`, que são as portas internas dos containers. PostgreSQL e Mailpit usam as portas padrão no computador: 5432 para o banco, 1025 para SMTP e 8025 para o painel de e-mails. `APP_PORT` e `VITE_PORT` controlam as portas da aplicação e do Vite; se mudar `APP_PORT`, ajuste também `APP_URL` antes de gerar convites. Depois execute `./vendor/bin/sail artisan config:clear` e `./vendor/bin/sail artisan view:clear` para descartar configurações e views compiladas com caminhos do host.
+
+Abra o convite no Mailpit, solicite o código, consulte a segunda mensagem, abra o PDF e confirme o aceite. Todos os signatários precisam aceitar para gerar o pacote. Para retomar falhas de fila: `./vendor/bin/sail artisan queue:failed` e, após corrigir a causa, `./vendor/bin/sail artisan queue:retry <id>`.
+
+Não use `composer setup` em uma instalação existente: ele gera outra chave de aplicação. Guarde `APP_KEY` com os backups; sessões e convites em fila usam criptografia. Nunca versionar `.env`, banco ou documentos. Para parar o ambiente, use `./vendor/bin/sail down`. O volume `postgres-data` contém o banco; não executar `./vendor/bin/sail down -v` se quiser preservá-lo.
 
 ## Verificações
 
 ```bash
-composer test
-npm run build
-composer audit
+./vendor/bin/sail composer test
+./vendor/bin/sail npm run build
+./vendor/bin/sail composer audit
 ```
 
-`phpunit.xml` usa SQLite em memória. Para PostgreSQL real, crie um banco **exclusivo de teste** chamado `assina_test`, configure host/usuário/senha e execute `composer test:pgsql`. Os testes apagam tabelas; nunca apontar para banco de uso. Há workflow preparado com PostgreSQL 17, ainda não executado no GitHub.
+`phpunit.xml` usa SQLite em memória. Para PostgreSQL real, crie um banco **exclusivo de teste** chamado `assina_test`, configure host/usuário/senha e execute `./vendor/bin/sail composer test:pgsql`. Os testes apagam tabelas; nunca apontar para banco de uso. Há workflow preparado com PostgreSQL 17, ainda não executado no GitHub.
 
 A suite cobre autorização por proprietário, fluxo completo, OTP/expiração/tentativas, cancelamento, consentimento, integridade e geração idempotente do pacote. Não representa teste de carga ou homologação de concorrência.
 
