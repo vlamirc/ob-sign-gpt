@@ -1,0 +1,66 @@
+name: Droplet container smoke test
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/droplet/**'
+      - '.dockerignore'
+      - '.github/workflows/droplet.yml'
+      - 'composer.*'
+      - 'package*.json'
+      - 'app/**'
+      - 'bootstrap/**'
+      - 'config/**'
+      - 'resources/**'
+      - 'routes/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare disposable CI configuration
+        shell: bash
+        run: |
+          cp deploy/droplet/env.example .env.droplet
+          {
+            printf 'APP_KEY=base64:%s\n' "$(openssl rand -base64 32)"
+            printf 'DB_PASSWORD=%s\n' "$(openssl rand -hex 24)"
+            printf 'APP_DOMAIN=preview.example.test\nACME_EMAIL=ci@example.test\n'
+            HASH=$(docker run --rm caddy:2-alpine caddy hash-password --plaintext ci-preview-password)
+            printf "PREVIEW_PASSWORD_HASH='%s'\n" "$HASH"
+          } >> .env.droplet
+          chmod 600 .env.droplet
+          mkdir -p deploy/droplet/python-source
+          printf 'print("python-runtime-ok")\n' > deploy/droplet/python-source/main.py
+      - name: Validate Compose and build the application
+        run: |
+          ./deploy/droplet/dc config --quiet
+          ./deploy/droplet/dc build app
+      - name: Migrate native PostgreSQL and start application
+        run: |
+          ./deploy/droplet/dc up -d --wait postgres
+          ./deploy/droplet/dc run --rm app php artisan migrate --force
+          ./deploy/droplet/dc up -d --wait app queue
+      - name: Check HTTP, HTTPS forwarding, private storage and Python runtime
+        run: |
+          ./deploy/droplet/dc exec -T app curl --fail --silent http://localhost/up
+          ./deploy/droplet/dc exec -T app sh -c 'curl --fail --silent -H "Host: preview.example.test" -H "X-Forwarded-Proto: https" http://localhost/login | grep -q "https://preview.example.test"'
+          ./deploy/droplet/dc exec -T --user www-data app sh -c 'echo persisted > storage/app/private/deploy-probe'
+          ./deploy/droplet/dc up -d --force-recreate --wait app
+          ./deploy/droplet/dc exec -T --user www-data app grep -q persisted storage/app/private/deploy-probe
+          ./deploy/droplet/dc run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile
+          ./deploy/droplet/dc --profile python run --rm python | grep -q python-runtime-ok
+      - name: Container status on failure
+        if: failure()
+        run: ./deploy/droplet/dc ps -a
+      - name: Remove disposable test volumes
+        if: always()
+        run: ./deploy/droplet/dc --profile python down -v --remove-orphans

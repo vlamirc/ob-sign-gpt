@@ -1,0 +1,128 @@
+name: ob-sign
+
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app: &app
+  image: ob-sign:${RELEASE_TAG:-prototype}
+  build:
+    context: ../..
+    dockerfile: deploy/droplet/Dockerfile
+    target: app
+  env_file: ../../.env.droplet
+  environment:
+    APP_ENV: production
+    APP_DEBUG: "false"
+    APP_KEY: ${APP_KEY:?Configure APP_KEY}
+    APP_URL: https://${APP_DOMAIN:?Configure APP_DOMAIN}
+    DB_CONNECTION: pgsql
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    DB_DATABASE: assina
+    DB_USERNAME: assina
+    DB_PASSWORD: ${DB_PASSWORD:?Configure DB_PASSWORD}
+    SESSION_DRIVER: database
+    SESSION_ENCRYPT: "true"
+    SESSION_SECURE_COOKIE: "true"
+    CACHE_STORE: database
+    QUEUE_CONNECTION: database
+    DB_QUEUE_RETRY_AFTER: "120"
+    LOG_CHANNEL: stderr
+    SIGNING_DISK: local
+    FILESYSTEM_DISK: local
+  volumes:
+    - app-storage:/var/www/html/storage
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+  logging: *logging
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: assina
+      POSTGRES_USER: assina
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Configure DB_PASSWORD}
+      TZ: UTC
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U assina -d assina"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    logging: *logging
+
+  app:
+    <<: *app
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost/up"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  queue:
+    <<: *app
+    user: www-data
+    command: ["php", "artisan", "queue:work", "--sleep=3", "--tries=3", "--timeout=60", "--max-time=3600"]
+    stop_grace_period: 90s
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Configure APP_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Configure ACME_EMAIL}
+      PREVIEW_USER: ${PREVIEW_USER:?Configure PREVIEW_USER}
+      PREVIEW_PASSWORD_HASH: ${PREVIEW_PASSWORD_HASH:?Configure PREVIEW_PASSWORD_HASH}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+  # One-shot job until the real script's lifecycle and dependencies are known.
+  python:
+    image: python:3.13-slim-bookworm
+    profiles: ["python"]
+    user: "10001:10001"
+    working_dir: /work
+    command: ["python", "-u", "/work/main.py"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - type: bind
+        source: ./python-source
+        target: /work
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 0.5
+    restart: "no"
+    logging: *logging
+
+volumes:
+  postgres-data:
+  app-storage:
+  caddy-data:
+  caddy-config:

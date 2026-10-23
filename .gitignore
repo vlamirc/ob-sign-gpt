@@ -42,3 +42,8 @@ yarn-error.log
 !/storage/app/private/.gitignore
 
 /database/*.sqlite*
+
+# Droplet secrets, local backups, and externally supplied Python code
+.env.droplet
+/backups/
+/deploy/droplet/python-source/
